@@ -2,7 +2,7 @@ require('dotenv').config(); // Charge les variables du fichier .env
 const app = require('./src/app');
 const connectDB = require('./src/config/database');
 
-const PORT = process.env.PORT || 4000; // Le post-service tournera sur le port 4000
+const PORT = process.env.PORT || 3003; // Le post-service tournera sur le port 3003 pour correspondre à l'infrastructure Docker
 
 // On se connecte d'abord à la base de données...
 connectDB().then(() => {

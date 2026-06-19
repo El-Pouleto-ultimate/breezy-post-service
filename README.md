@@ -7,7 +7,7 @@ Service gérant les publications, likes, et commentaires.
 - MongoDB
 - Créer un fichier `.env` basé sur `.env.example`
 
-## API Routes (Port par défaut : 4003)
+## API Routes (Port par défaut : 3003)
 *Note : Toutes les routes nécessitent généralement le header `x-user-id` provenant de l'API Gateway.*
 
 ### Posts
