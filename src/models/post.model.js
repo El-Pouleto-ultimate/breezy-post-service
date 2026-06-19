@@ -8,6 +8,7 @@ const postSchema = new mongoose.Schema({
     media_urls: [String],
     likes_count: { type: Number, default: 0, min: 0 },
     comments_count: { type: Number, default: 0, min: 0 },
+    reposts_count: { type: Number, default: 0, min: 0 },
     is_reported: { type: Boolean, default: false },
 }, {
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' }
