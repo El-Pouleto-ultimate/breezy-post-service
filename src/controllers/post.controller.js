@@ -17,6 +17,51 @@ exports.create = async (req, res) => {
     }
 
     const post = await Post.create({ user_id: userId, username, content, tags, media_urls });
+
+    // --- DÉBUT LOGIQUE MENTIONS (Fx14) ---
+    // On vérifie d'abord très vite s'il y a un '@' pour ne pas faire de calculs inutiles
+    if (content.includes('@')) {
+        // 1. Extraire tous les mots commençant par @ (ex: ["@arthur", "@lucas"])
+        const mentionedUsernames = content.match(/@([a-zA-Z0-9_]+)/g);
+
+        if (mentionedUsernames) {
+            // 2. Nettoyer pour enlever le '@' (ex: ["arthur", "lucas"])
+            const cleanUsernames = mentionedUsernames.map(m => m.substring(1));
+
+            // 3. Pour chaque utilisateur mentionné...
+            for (const mentionedName of cleanUsernames) {
+                try {
+                    // A. On demande au user-service quel est l'ID technique de cet utilisateur
+                    // ⚠️ ATTENTION: Prévenez Arthur qu'il doit créer cette route GET !
+                    const userRes = await axios.get(`${process.env.USER_SERVICE_URL}/users/by-username/${mentionedName}`, {
+                        headers: { 'x-user-id': userId }
+                    });
+                    const recipientId = userRes.data.id;
+
+                    // B. Si on a trouvé l'ID, on envoie la notification au profil-service
+                    if (recipientId && recipientId !== userId) { // (On évite de s'auto-notifier)
+                        await axios.post(`${process.env.PROFIL_SERVICE_URL}/notifications/internal`, {
+                            recipient_user_id: recipientId,
+                            type: 'mention',
+                            from_user_id: userId,
+                            from_username: username,
+                            post_id: post._id
+                        }, {
+                            // On sécurise l'appel interne comme vous l'avez fait pour les likes
+                            headers: { 'x-internal-secret': process.env.INTERNAL_SECRET },
+                            timeout: 1000 // Timeout très court pour ne pas ralentir la réponse au client
+                        });
+                    }
+                } catch (err) {
+                    // Si le User Service ou le Profil Service crash, on ignore l'erreur
+                    // pour que le post soit quand même publié avec succès !
+                    console.warn(`[Mention] Impossible de notifier ${mentionedName}`);
+                }
+            }
+        }
+    }
+    // --- FIN LOGIQUE MENTIONS ---
+
     return res.status(201).json(post);
 };
 
@@ -57,7 +102,10 @@ exports.getFeed = async (req, res) => {
     try {
         const response = await axios.get(
             `${process.env.USER_SERVICE_URL}/users/${userId}/following`,
-            { timeout: 3000 }
+            { 
+                headers: { 'x-user-id': userId },
+                timeout: 3000 
+            }
         );
         followingIds = response.data.data || [];
     } catch (err) {
