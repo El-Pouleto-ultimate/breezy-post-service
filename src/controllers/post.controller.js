@@ -175,6 +175,7 @@ exports.getByUser = async (req, res) => {
 
 // ─── GET /posts/search?q=xxx ou ?tag=xxx ────────────────────────────────
 exports.searchByTag = async (req, res) => {
+    try{
     const { tag, page = 1, limit = 20 } = req.query;
     if (!tag) return res.status(400).json({ error: { code: 'MISSING_TAG' } });
 
