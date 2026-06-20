@@ -5,6 +5,7 @@ const Comment = require('../models/comment.model');
 
 // ─── POST /posts ──────────────────────────────────────────────
 exports.create = async (req, res) => {
+  try {
     const userId = req.headers['x-user-id'];
     const username = req.headers['x-user-username'];
     const { content, tags = [], media_urls = [] } = req.body;
@@ -63,17 +64,27 @@ exports.create = async (req, res) => {
     // --- FIN LOGIQUE MENTIONS ---
 
     return res.status(201).json(post);
+  } catch (err) {
+    console.error('[Post] create error:', err);
+    return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Erreur serveur.' } });
+  }
 };
 
 // ─── GET /posts/:id ───────────────────────────────────────────
 exports.getById = async (req, res) => {
+  try {
     const post = await Post.findById(req.params.id);
     if (!post) return res.status(404).json({ error: { code: 'POST_NOT_FOUND' } });
     return res.json(post);
+  } catch (err) {
+    console.error('[Post] getById error:', err);
+    return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Erreur serveur.' } });
+  }
 };
 
 // ─── DELETE /posts/:id ────────────────────────────────────────
 exports.delete = async (req, res) => {
+  try {
     const userId = req.headers['x-user-id'];
     const role = req.headers['x-user-role'];
     const post = await Post.findById(req.params.id);
@@ -89,10 +100,15 @@ exports.delete = async (req, res) => {
     await Comment.deleteMany({ post_id: req.params.id });
 
     return res.status(204).send();
+  } catch (err) {
+    console.error('[Post] delete error:', err);
+    return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Erreur serveur.' } });
+  }
 };
 
 // ─── GET /posts/feed (Le flux principal) ──────────────────────
 exports.getFeed = async (req, res) => {
+  try {
     const userId = req.headers['x-user-id'];
     const { page = 1, limit = 20 } = req.query;
     const skip = (page - 1) * limit;
@@ -102,9 +118,9 @@ exports.getFeed = async (req, res) => {
     try {
         const response = await axios.get(
             `${process.env.USER_SERVICE_URL}/users/${userId}/following`,
-            { 
+            {
                 headers: { 'x-user-id': userId },
-                timeout: 3000 
+                timeout: 3000
             }
         );
         followingIds = response.data.data || [];
@@ -129,10 +145,15 @@ exports.getFeed = async (req, res) => {
         data: posts,
         pagination: { page: parseInt(page), limit: parseInt(limit), total, hasNext: skip + posts.length < total }
     });
+  } catch (err) {
+    console.error('[Post] getFeed error:', err);
+    return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Erreur serveur.' } });
+  }
 };
 
 // ─── GET /posts/user/:userId ──────────────────────────────────
 exports.getByUser = async (req, res) => {
+  try {
     const { page = 1, limit = 20 } = req.query;
     const skip = (page - 1) * limit;
     const total = await Post.countDocuments({ user_id: req.params.userId });
@@ -145,10 +166,15 @@ exports.getByUser = async (req, res) => {
         data: posts,
         pagination: { page: parseInt(page), limit: parseInt(limit), total, hasNext: skip + posts.length < total }
     });
+  } catch (err) {
+    console.error('[Post] getByUser error:', err);
+    return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Erreur serveur.' } });
+  }
 };
 
 // ─── GET /posts/search?tag=xxx ────────────────────────────────
 exports.searchByTag = async (req, res) => {
+  try {
     const { tag, page = 1, limit = 20 } = req.query;
     if (!tag) return res.status(400).json({ error: { code: 'MISSING_TAG' } });
 
@@ -163,10 +189,19 @@ exports.searchByTag = async (req, res) => {
         data: posts,
         pagination: { page: parseInt(page), limit: parseInt(limit), total, hasNext: skip + posts.length < total }
     });
+  } catch (err) {
+    console.error('[Post] searchByTag error:', err);
+    return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Erreur serveur.' } });
+  }
 };
 
 // ─── POST /posts/:id/report ───────────────────────────────────
 exports.report = async (req, res) => {
+  try {
     await Post.findByIdAndUpdate(req.params.id, { is_reported: true });
     return res.json({ message: 'Post signalé.' });
+  } catch (err) {
+    console.error('[Post] report error:', err);
+    return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Erreur serveur.' } });
+  }
 };
