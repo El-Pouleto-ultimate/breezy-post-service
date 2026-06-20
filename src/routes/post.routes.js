@@ -7,11 +7,17 @@ const commentCtrl = require('../controllers/comment.controller');
 router.get('/posts/feed', postCtrl.getFeed);
 router.get('/posts/search', postCtrl.searchByTag);
 router.get('/posts/user/:userId', postCtrl.getByUser);
+router.get('/posts/user/:userId/media', postCtrl.getUserMedia);
+router.get('/posts/user/:userId/likes', postCtrl.getUserLikes);
+router.get('/posts/user/:userId/replies', postCtrl.getUserReplies);
+router.get('/posts/user/:userId/reposts', postCtrl.getUserReposts);
 
 router.post('/posts', postCtrl.create);
+router.put('/posts/:id', postCtrl.update);
 router.get('/posts/:id', postCtrl.getById);
 router.delete('/posts/:id', postCtrl.delete);
 router.post('/posts/:id/report', postCtrl.report);
+router.post('/posts/:id/repost', postCtrl.toggleRepost);
 
 router.post('/posts/:id/like', likeCtrl.like);
 router.delete('/posts/:id/like', likeCtrl.unlike);
