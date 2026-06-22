@@ -4,6 +4,7 @@ const Like = require('../models/like.model');
 
 // ─── POST /posts/:id/like ─────────────────────────────────────
 exports.like = async (req, res) => {
+  try {
     const userId = req.headers['x-user-id'];
     const username = req.headers['x-user-username'];
     const postId = req.params.id;
@@ -11,41 +12,39 @@ exports.like = async (req, res) => {
     const post = await Post.findById(postId);
     if (!post) return res.status(404).json({ error: { code: 'POST_NOT_FOUND' } });
 
+    await Like.create({ post_id: postId, user_id: userId });
+    const updated = await Post.findByIdAndUpdate(
+        postId,
+        { $inc: { likes_count: 1 } },
+        { new: true }
+    );
+
     try {
-        await Like.create({ post_id: postId, user_id: userId });
-        // $inc est atomique : on évite les problèmes si deux personnes likent en même temps
-        const updated = await Post.findByIdAndUpdate(
-            postId,
-            { $inc: { likes_count: 1 } },
-            { new: true }
-        );
+        await axios.post(`${process.env.PROFIL_SERVICE_URL}/api/notifications/internal`, {
+            recipient_user_id: post.user_id,
+            type: 'like',
+            from_user_id: userId,
+            from_username: username,
+            post_id: postId,
+        }, {
+            headers: { 'x-internal-secret': process.env.INTERNAL_SECRET },
+            timeout: 1000
+        });
+    } catch { /* Notification non critique */ }
 
-        // Notification envoyée au profil-service
-        try {
-            await axios.post(`${process.env.PROFIL_SERVICE_URL}/notifications/internal`, {
-                recipient_user_id: post.user_id,
-                type: 'like',
-                from_user_id: userId,
-                from_username: username,
-                post_id: postId,
-            }, {
-                headers: { 'x-internal-secret': process.env.INTERNAL_SECRET },
-                timeout: 1000 // non bloquant, si ça fail, ça ne crash pas le like
-            });
-        } catch { /* Notification non critique */ }
-
-        return res.json({ likes_count: updated.likes_count });
-    } catch (err) {
-        // Erreur 11000 = on a essayé de liker un truc qu'on a déjà liké
-        if (err.code === 11000) {
-            return res.status(409).json({ error: { code: 'ALREADY_LIKED', message: 'Vous avez déjà liké ce post.' } });
-        }
-        throw err;
+    return res.json({ likes_count: updated.likes_count });
+  } catch (err) {
+    if (err.code === 11000) {
+        return res.status(409).json({ error: { code: 'ALREADY_LIKED', message: 'Vous avez déjà liké ce post.' } });
     }
+    console.error('[Like] like error:', err);
+    return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Erreur serveur.' } });
+  }
 };
 
 // ─── DELETE /posts/:id/like ───────────────────────────────────
 exports.unlike = async (req, res) => {
+  try {
     const userId = req.headers['x-user-id'];
     const postId = req.params.id;
 
@@ -58,6 +57,9 @@ exports.unlike = async (req, res) => {
         { $inc: { likes_count: -1 } },
         { new: true }
     );
-    // Math.max(0, ...) permet d'être sûr que le compteur ne passe jamais sous 0
     return res.json({ likes_count: Math.max(0, updated.likes_count) });
+  } catch (err) {
+    console.error('[Like] unlike error:', err);
+    return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Erreur serveur.' } });
+  }
 };

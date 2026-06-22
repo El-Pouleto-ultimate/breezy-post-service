@@ -42,7 +42,7 @@ exports.create = async (req, res) => {
 
                     // B. Si on a trouvé l'ID, on envoie la notification au profil-service
                     if (recipientId && recipientId !== userId) { // (On évite de s'auto-notifier)
-                        await axios.post(`${process.env.PROFIL_SERVICE_URL}/notifications/internal`, {
+                        await axios.post(`${process.env.PROFIL_SERVICE_URL}/api/notifications/internal`, {
                             recipient_user_id: recipientId,
                             type: 'mention',
                             from_user_id: userId,
@@ -114,7 +114,6 @@ exports.getFeed = async (req, res) => {
     const { page = 1, limit = 20 } = req.query;
     const skip = (page - 1) * limit;
 
-    // 1. Récupère les IDs des utilisateurs suivis via le user-service (développé par Arthur)
     let followingIds = [];
     try {
         const response = await axios.get(
@@ -124,26 +123,35 @@ exports.getFeed = async (req, res) => {
                 timeout: 3000
             }
         );
-        followingIds = response.data.data || [];
+        followingIds = response.data.ids || response.data.data || [];
     } catch (err) {
         console.warn('[Post] Impossible de récupérer la liste des abonnements :', err.message);
-        // On renvoie un feed vide plutôt qu'une erreur 500 pour ne pas tout bloquer
-        return res.json({ data: [], pagination: { page: 1, limit, total: 0, hasNext: false } });
     }
 
-    if (followingIds.length === 0) {
-        return res.json({ data: [], pagination: { page: 1, limit, total: 0, hasNext: false } });
-    }
+    const feedUserIds = [...new Set([userId, ...followingIds])];
 
-    // 2. Récupère les posts des gens qu'on suit
-    const total = await Post.countDocuments({ user_id: { $in: followingIds } });
-    const posts = await Post.find({ user_id: { $in: followingIds } })
+    const total = await Post.countDocuments({ user_id: { $in: feedUserIds } });
+    const posts = await Post.find({ user_id: { $in: feedUserIds } })
         .sort({ created_at: -1 })
         .skip(skip)
         .limit(parseInt(limit));
 
+    const postIds = posts.map(p => p._id);
+    const [userLikes, userReposts] = await Promise.all([
+      Like.find({ user_id: userId, post_id: { $in: postIds } }),
+      Repost.find({ user_id: userId, post_id: { $in: postIds } }),
+    ]);
+    const likedSet = new Set(userLikes.map(l => l.post_id.toString()));
+    const repostedSet = new Set(userReposts.map(r => r.post_id.toString()));
+
+    const enriched = posts.map(p => ({
+      ...p.toObject(),
+      likedByMe: likedSet.has(p._id.toString()),
+      repostedByMe: repostedSet.has(p._id.toString()),
+    }));
+
     return res.json({
-        data: posts,
+        data: enriched,
         pagination: { page: parseInt(page), limit: parseInt(limit), total, hasNext: skip + posts.length < total }
     });
   } catch (err) {
@@ -175,14 +183,22 @@ exports.getByUser = async (req, res) => {
 
 // ─── GET /posts/search?q=xxx ou ?tag=xxx ────────────────────────────────
 exports.searchByTag = async (req, res) => {
-    try{
-    const { tag, page = 1, limit = 20 } = req.query;
-    if (!tag) return res.status(400).json({ error: { code: 'MISSING_TAG' } });
+  try {
+    const { q, tag, page = 1, limit = 20 } = req.query;
+    const searchTerm = q || tag;
+    if (!searchTerm) return res.status(400).json({ error: { code: 'MISSING_QUERY', message: 'Parametre q ou tag requis.' } });
 
     const skip = (page - 1) * limit;
-    // On cherche le tag correspondant en minuscules
-    const total = await Post.countDocuments({ tags: searchQuery.toLowerCase() });
-    const posts = await Post.find({ tags: searchQuery.toLowerCase() })
+    const filter = {
+      $or: [
+        { content: { $regex: searchTerm, $options: 'i' } },
+        { tags: searchTerm.toLowerCase() },
+        { username: { $regex: searchTerm, $options: 'i' } },
+      ]
+    };
+
+    const total = await Post.countDocuments(filter);
+    const posts = await Post.find(filter)
         .sort({ created_at: -1 })
         .skip(skip)
         .limit(parseInt(limit));
@@ -192,7 +208,7 @@ exports.searchByTag = async (req, res) => {
         pagination: { page: parseInt(page), limit: parseInt(limit), total, hasNext: skip + posts.length < total }
     });
   } catch (err) {
-    console.error('[Post] searchByTag error:', err);
+    console.error('[Post] search error:', err);
     return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Erreur serveur.' } });
   }
 };
@@ -210,10 +226,10 @@ exports.report = async (req, res) => {
 
 // ─── PUT /posts/:id ───────────────────────────────────────────
 exports.update = async (req, res) => {
+  try {
     const userId = req.headers['x-user-id'];
     const { content, tags = [], media_urls = [] } = req.body;
 
-    // 1. Vérification de base
     if (!content || content.length > 280) {
         return res.status(400).json({ error: { code: 'INVALID_CONTENT', message: 'Contenu invalide (1-280 caractères).' } });
     }
@@ -224,119 +240,105 @@ exports.update = async (req, res) => {
     const post = await Post.findById(req.params.id);
     if (!post) return res.status(404).json({ error: { code: 'POST_NOT_FOUND' } });
 
-    // 2. Sécurité : seul l'auteur peut modifier son post
     if (post.user_id !== userId) {
         return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Vous ne pouvez modifier que vos propres posts.' } });
     }
 
-    // 3. Mise à jour
     post.content = content;
     post.tags = tags;
     post.media_urls = media_urls;
     await post.save();
 
     return res.json(post);
+  } catch (err) {
+    console.error('[Post] update error:', err);
+    return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Erreur serveur.' } });
+  }
 };
 
 // ─── GET /posts/user/:userId/media ────────────────────────────
 exports.getUserMedia = async (req, res) => {
+  try {
     const { page = 1, limit = 20 } = req.query;
     const skip = (page - 1) * limit;
-
-    // Astuce MongoDB : "media_urls.0": { $exists: true } vérifie que le tableau contient au moins 1 élément
     const filter = { user_id: req.params.userId, "media_urls.0": { $exists: true } };
-
     const total = await Post.countDocuments(filter);
-    const posts = await Post.find(filter)
-        .sort({ created_at: -1 })
-        .skip(skip)
-        .limit(parseInt(limit));
-
-    return res.json({
-        data: posts,
-        pagination: { page: parseInt(page), limit: parseInt(limit), total, hasNext: skip + posts.length < total }
-    });
+    const posts = await Post.find(filter).sort({ created_at: -1 }).skip(skip).limit(parseInt(limit));
+    return res.json({ data: posts, pagination: { page: parseInt(page), limit: parseInt(limit), total, hasNext: skip + posts.length < total } });
+  } catch (err) {
+    console.error('[Post] getUserMedia error:', err);
+    return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Erreur serveur.' } });
+  }
 };
 
 // ─── GET /posts/user/:userId/likes ────────────────────────────
 exports.getUserLikes = async (req, res) => {
+  try {
     const { page = 1, limit = 20 } = req.query;
     const skip = (page - 1) * limit;
-
-    // 1. On cherche d'abord dans la table des Likes
-    const likes = await Like.find({ user_id: req.params.userId })
-        .sort({ created_at: -1 })
-        .skip(skip)
-        .limit(parseInt(limit));
-
-    // 2. On extrait uniquement les IDs des posts likés
+    const likes = await Like.find({ user_id: req.params.userId }).sort({ created_at: -1 }).skip(skip).limit(parseInt(limit));
     const postIds = likes.map(l => l.post_id);
-
-    // 3. On demande à MongoDB de nous sortir tous ces posts d'un coup
     const posts = await Post.find({ _id: { $in: postIds } });
-
     const total = await Like.countDocuments({ user_id: req.params.userId });
-
-    return res.json({
-        data: posts,
-        pagination: { page: parseInt(page), limit: parseInt(limit), total, hasNext: skip + likes.length < total }
-    });
+    return res.json({ data: posts, pagination: { page: parseInt(page), limit: parseInt(limit), total, hasNext: skip + likes.length < total } });
+  } catch (err) {
+    console.error('[Post] getUserLikes error:', err);
+    return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Erreur serveur.' } });
+  }
 };
 
 // ─── GET /posts/user/:userId/replies ──────────────────────────
 exports.getUserReplies = async (req, res) => {
+  try {
     const { page = 1, limit = 20 } = req.query;
     const skip = (page - 1) * limit;
-
     const total = await Comment.countDocuments({ user_id: req.params.userId });
-    // Ici on interroge la table Comment au lieu de Post
-    const replies = await Comment.find({ user_id: req.params.userId })
-        .sort({ created_at: -1 })
-        .skip(skip)
-        .limit(parseInt(limit));
-
-    return res.json({
-        data: replies,
-        pagination: { page: parseInt(page), limit: parseInt(limit), total, hasNext: skip + replies.length < total }
-    });
+    const replies = await Comment.find({ user_id: req.params.userId }).sort({ created_at: -1 }).skip(skip).limit(parseInt(limit));
+    return res.json({ data: replies, pagination: { page: parseInt(page), limit: parseInt(limit), total, hasNext: skip + replies.length < total } });
+  } catch (err) {
+    console.error('[Post] getUserReplies error:', err);
+    return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Erreur serveur.' } });
+  }
 };
 
 // ─── POST /posts/:id/repost ───────────────────────────────────
 exports.toggleRepost = async (req, res) => {
+  try {
     const userId = req.headers['x-user-id'];
     const postId = req.params.id;
+
+    const post = await Post.findById(postId);
+    if (!post) return res.status(404).json({ error: { code: 'POST_NOT_FOUND' } });
 
     const existingRepost = await Repost.findOne({ post_id: postId, user_id: userId });
 
     if (existingRepost) {
-        // Déjà reposté : on supprime (un-repost)
         await Repost.findByIdAndDelete(existingRepost._id);
         const updated = await Post.findByIdAndUpdate(postId, { $inc: { reposts_count: -1 } }, { new: true });
         return res.json({ reposts_count: Math.max(0, updated.reposts_count), reposted: false });
     } else {
-        // Pas encore reposté : on le crée
         await Repost.create({ post_id: postId, user_id: userId });
         const updated = await Post.findByIdAndUpdate(postId, { $inc: { reposts_count: 1 } }, { new: true });
         return res.json({ reposts_count: updated.reposts_count, reposted: true });
     }
+  } catch (err) {
+    console.error('[Post] toggleRepost error:', err);
+    return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Erreur serveur.' } });
+  }
 };
 
 // ─── GET /posts/user/:userId/reposts ──────────────────────────
 exports.getUserReposts = async (req, res) => {
+  try {
     const { page = 1, limit = 20 } = req.query;
     const skip = (page - 1) * limit;
-
-    const reposts = await Repost.find({ user_id: req.params.userId })
-        .sort({ created_at: -1 })
-        .skip(skip)
-        .limit(parseInt(limit));
-
+    const reposts = await Repost.find({ user_id: req.params.userId }).sort({ created_at: -1 }).skip(skip).limit(parseInt(limit));
     const postIds = reposts.map(r => r.post_id);
     const posts = await Post.find({ _id: { $in: postIds } });
     const total = await Repost.countDocuments({ user_id: req.params.userId });
-
-    return res.json({
-        data: posts,
-        pagination: { page: parseInt(page), limit: parseInt(limit), total, hasNext: skip + reposts.length < total }
-    });
+    return res.json({ data: posts, pagination: { page: parseInt(page), limit: parseInt(limit), total, hasNext: skip + reposts.length < total } });
+  } catch (err) {
+    console.error('[Post] getUserReposts error:', err);
+    return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Erreur serveur.' } });
+  }
 };

@@ -6,7 +6,7 @@ const app = express();
 
 // --- Middlewares ---
 // Permet au serveur de comprendre le JSON qu'on lui envoie
-app.use(express.json());
+app.use(express.json({ limit: '5mb' }));
 // Affiche un joli log dans la console à chaque requête reçue
 app.use(morgan('dev'));
 

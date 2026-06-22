@@ -24,6 +24,8 @@ router.delete('/posts/:id/like', likeCtrl.unlike);
 
 router.get('/posts/:id/comments', commentCtrl.getComments);
 router.post('/posts/:id/comments', commentCtrl.createComment);
+router.put('/posts/:id/comments/:commentId', commentCtrl.updateComment);
+router.delete('/posts/:id/comments/:commentId', commentCtrl.deleteComment);
 router.post('/posts/:id/comments/:commentId/replies', commentCtrl.createReply);
 
 module.exports = router;
