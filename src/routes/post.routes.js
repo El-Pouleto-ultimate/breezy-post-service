@@ -2,6 +2,15 @@ const router = require('express').Router();
 const postCtrl = require('../controllers/post.controller');
 const likeCtrl = require('../controllers/like.controller');
 const commentCtrl = require('../controllers/comment.controller');
+const upload = require('../middleware/upload.middleware');
+
+// Upload de fichiers (doit être avant les routes avec ":id" pour éviter les conflits)
+router.post('/upload', (req, res, next) => {
+  upload.single('file')(req, res, (err) => {
+    if (err) return postCtrl.handleUploadError(err, req, res, next);
+    next();
+  });
+}, postCtrl.uploadMedia);
 
 // Feed et recherche (doivent être mis avant les routes avec ":id" pour éviter les conflits)
 router.get('/posts/feed', postCtrl.getFeed);

@@ -228,7 +228,7 @@ exports.report = async (req, res) => {
 exports.update = async (req, res) => {
   try {
     const userId = req.headers['x-user-id'];
-    const { content, tags = [], media_urls = [] } = req.body;
+    const { content, tags = [], media_urls } = req.body;
 
     if (!content || content.length > 280) {
         return res.status(400).json({ error: { code: 'INVALID_CONTENT', message: 'Contenu invalide (1-280 caractères).' } });
@@ -246,7 +246,10 @@ exports.update = async (req, res) => {
 
     post.content = content;
     post.tags = tags;
-    post.media_urls = media_urls;
+    // Only update media_urls if explicitly provided (preserve existing photos otherwise)
+    if (media_urls !== undefined) {
+      post.media_urls = media_urls;
+    }
     await post.save();
 
     return res.json(post);
@@ -325,6 +328,39 @@ exports.toggleRepost = async (req, res) => {
     console.error('[Post] toggleRepost error:', err);
     return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Erreur serveur.' } });
   }
+};
+
+// ─── POST /upload ─────────────────────────────────────────────
+exports.uploadMedia = async (req, res) => {
+  try {
+    // Erreurs multer (fichier trop gros, mauvais format) — multer les met dans req.fileValidationError
+    // ou via l'error handler du middleware
+    if (req.fileValidationError) {
+      return res.status(400).json({ error: { code: 'INVALID_FILE', message: req.fileValidationError } });
+    }
+    if (!req.file) {
+      return res.status(400).json({ error: { code: 'NO_FILE', message: 'Aucun fichier fourni.' } });
+    }
+    const url = `/api/uploads/${req.file.filename}`;
+    return res.status(201).json({ url });
+  } catch (err) {
+    console.error('[Post] uploadMedia error:', err);
+    return res.status(500).json({ error: { code: 'UPLOAD_ERROR', message: 'Erreur lors de l\'upload.' } });
+  }
+};
+
+// Middleware de gestion des erreurs multer (fichier trop gros, mauvais type...)
+exports.handleUploadError = (err, req, res, next) => {
+  if (err) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ error: { code: 'FILE_TOO_LARGE', message: 'Image trop volumineuse (max 5 Mo).' } });
+    }
+    if (err.message === 'Seules les images sont autorisees') {
+      return res.status(400).json({ error: { code: 'INVALID_FILE', message: 'Format non supporté. Seules les images sont autorisées.' } });
+    }
+    return res.status(400).json({ error: { code: 'UPLOAD_ERROR', message: err.message || 'Erreur lors de l\'upload.' } });
+  }
+  next();
 };
 
 // ─── GET /posts/user/:userId/reposts ──────────────────────────
