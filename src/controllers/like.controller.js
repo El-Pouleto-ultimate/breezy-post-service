@@ -20,12 +20,24 @@ exports.like = async (req, res) => {
     );
 
     try {
+        // Récupérer le rôle de l'auteur du post pour respecter la matrice des permissions
+        // (les modérateurs et admins ne reçoivent pas de notification de like — Fx15)
+        let recipientRole = null;
+        try {
+            const userResp = await axios.get(`${process.env.USER_SERVICE_URL}/users/${post.user_id}`, {
+                headers: { 'x-user-id': post.user_id },
+                timeout: 1000
+            });
+            recipientRole = userResp.data?.role;
+        } catch { /* Si on ne peut pas récupérer le rôle, on envoie quand même la notif */ }
+
         await axios.post(`${process.env.PROFIL_SERVICE_URL}/api/notifications/internal`, {
             recipient_user_id: post.user_id,
             type: 'like',
             from_user_id: userId,
             from_username: username,
             post_id: postId,
+            recipient_role: recipientRole,
         }, {
             headers: { 'x-internal-secret': process.env.INTERNAL_SECRET },
             timeout: 1000
