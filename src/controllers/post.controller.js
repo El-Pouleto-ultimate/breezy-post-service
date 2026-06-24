@@ -4,6 +4,45 @@ const Like = require('../models/like.model');
 const Comment = require('../models/comment.model');
 const Repost = require('../models/repost.model');
 
+const BOT_USERNAME = 'breezy_ai';
+const BOT_USER_ID = 'a7af3029-cd8b-4cda-b827-aab8095cf800';
+
+async function handleBotReply(post) {
+    try {
+        const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
+            model: 'openai/gpt-oss-20b:free',
+            messages: [
+                { role: 'system', content: 'Tu es Breezy AI, un assistant sympa sur un réseau social. Réponds en 280 caractères max, de manière concise et naturelle. Réponds dans la langue du message.' },
+                { role: 'user', content: post.content }
+            ]
+        }, {
+            headers: {
+                'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+                'Content-Type': 'application/json'
+            },
+            timeout: 15000
+        });
+
+        const reply = res.data.choices?.[0]?.message?.content;
+        if (!reply) return;
+
+        const trimmed = reply.substring(0, 280);
+
+        await Comment.create({
+            post_id: post._id,
+            user_id: BOT_USER_ID,
+            username: BOT_USERNAME,
+            content: trimmed,
+            parent_comment_id: null
+        });
+        await Post.findByIdAndUpdate(post._id, { $inc: { comments_count: 1 } });
+
+        console.log(`[Bot] Réponse postée sur ${post._id}`);
+    } catch (err) {
+        console.warn('[Bot] Erreur:', err.message);
+    }
+}
+
 // ─── POST /posts ──────────────────────────────────────────────
 exports.create = async (req, res) => {
   try {
@@ -63,6 +102,11 @@ exports.create = async (req, res) => {
         }
     }
     // --- FIN LOGIQUE MENTIONS ---
+
+    // --- BOT IA : répondre si @breezy-ai est mentionné ---
+    if (content.toLowerCase().includes(`@${BOT_USERNAME}`)) {
+        handleBotReply(post);
+    }
 
     return res.status(201).json(post);
   } catch (err) {
