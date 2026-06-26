@@ -73,7 +73,6 @@ exports.create = async (req, res) => {
             for (const mentionedName of cleanUsernames) {
                 try {
                     // A. On demande au user-service quel est l'ID technique de cet utilisateur
-                    // ⚠️ ATTENTION: Prévenez Arthur qu'il doit créer cette route GET !
                     const userRes = await axios.get(`${process.env.USER_SERVICE_URL}/users/by-username/${mentionedName}`, {
                         headers: { 'x-user-id': userId }
                     });
