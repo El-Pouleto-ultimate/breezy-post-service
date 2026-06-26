@@ -7,8 +7,10 @@ const Repost = require('../models/repost.model');
 const BOT_USERNAME = 'breezy_ai';
 const BOT_USER_ID = 'a7af3029-cd8b-4cda-b827-aab8095cf800';
 
+// 🤖 Fonction interne gérant la réponse automatique de Breezy AI
 async function handleBotReply(post) {
     try {
+        // 1. Appel HTTP externe vers l'API OpenRouter (utilisation d'un modèle gratuit)
         const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
             model: 'openai/gpt-oss-20b:free',
             messages: [
@@ -26,8 +28,10 @@ async function handleBotReply(post) {
         const reply = res.data.choices?.[0]?.message?.content;
         if (!reply) return;
 
+        // Tronquer à 280 caractères par sécurité
         const trimmed = reply.substring(0, 280);
 
+        // 2. Écrit le commentaire de l'IA dans MongoDB sous le post de l'utilisateur
         await Comment.create({
             post_id: post._id,
             user_id: BOT_USER_ID,
@@ -35,6 +39,8 @@ async function handleBotReply(post) {
             content: trimmed,
             parent_comment_id: null
         });
+
+        // 3. Incrémente le compteur global de commentaires du post
         await Post.findByIdAndUpdate(post._id, { $inc: { comments_count: 1 } });
 
         console.log(`[Bot] Réponse postée sur ${post._id}`);
@@ -44,12 +50,14 @@ async function handleBotReply(post) {
 }
 
 // ─── POST /posts ──────────────────────────────────────────────
+// Crée un nouveau post, gère les mentions (@) et appelle le bot IA si mentionné.
 exports.create = async (req, res) => {
   try {
-    const userId = req.headers['x-user-id'];
+    const userId = req.headers['x-user-id']; // Identité injectée par la Gateway
     const username = req.headers['x-user-username'];
     const { content, tags = [], media_urls = [] } = req.body;
 
+    // Validation des limites métiers
     if (!content || content.length > 280) {
         return res.status(400).json({ error: { code: 'INVALID_CONTENT', message: 'Contenu invalide (1-280 caractères).' } });
     }
@@ -57,29 +65,28 @@ exports.create = async (req, res) => {
         return res.status(400).json({ error: { code: 'TOO_MANY_TAGS', message: 'Maximum 5 tags.' } });
     }
 
+    // 1. Enregistrement en base de données MongoDB
     const post = await Post.create({ user_id: userId, username, content, tags, media_urls });
 
-    // --- DÉBUT LOGIQUE MENTIONS (Fx14) ---
-    // On vérifie d'abord très vite s'il y a un '@' pour ne pas faire de calculs inutiles
+    // --- LOGIQUE MENTIONS (Fx14) ---
     if (content.includes('@')) {
-        // 1. Extraire tous les mots commençant par @ (ex: ["@arthur", "@lucas"])
+        // A. Extraction des mots commençant par @
         const mentionedUsernames = content.match(/@([a-zA-Z0-9_]+)/g);
 
         if (mentionedUsernames) {
-            // 2. Nettoyer pour enlever le '@' (ex: ["arthur", "lucas"])
+            // Nettoyage du préfixe '@'
             const cleanUsernames = mentionedUsernames.map(m => m.substring(1));
 
-            // 3. Pour chaque utilisateur mentionné...
             for (const mentionedName of cleanUsernames) {
                 try {
-                    // A. On demande au user-service quel est l'ID technique de cet utilisateur
+                    // B. Appel HTTP au user-service pour obtenir l'ID de l'utilisateur mentionné par son pseudo
                     const userRes = await axios.get(`${process.env.USER_SERVICE_URL}/users/by-username/${mentionedName}`, {
                         headers: { 'x-user-id': userId }
                     });
                     const recipientId = userRes.data.id;
 
-                    // B. Si on a trouvé l'ID, on envoie la notification au profil-service
-                    if (recipientId && recipientId !== userId) { // (On évite de s'auto-notifier)
+                    // C. Envoi d'une notification de type 'mention' au profil-service (si ce n'est pas une auto-mention)
+                    if (recipientId && recipientId !== userId) {
                         await axios.post(`${process.env.PROFIL_SERVICE_URL}/api/notifications/internal`, {
                             recipient_user_id: recipientId,
                             type: 'mention',
@@ -87,24 +94,20 @@ exports.create = async (req, res) => {
                             from_username: username,
                             post_id: post._id
                         }, {
-                            // On sécurise l'appel interne comme vous l'avez fait pour les likes
                             headers: { 'x-internal-secret': process.env.INTERNAL_SECRET },
-                            timeout: 1000 // Timeout très court pour ne pas ralentir la réponse au client
+                            timeout: 1000 // Timeout court (1s) pour ne pas bloquer l'utilisateur principal en cas de lenteur du service de notifs
                         });
                     }
                 } catch (err) {
-                    // Si le User Service ou le Profil Service crash, on ignore l'erreur
-                    // pour que le post soit quand même publié avec succès !
-                    console.warn(`[Mention] Impossible de notifier ${mentionedName}`);
+                    console.warn(`[Mention] Impossible de notifier ${mentionedName} :`, err.message);
                 }
             }
         }
     }
-    // --- FIN LOGIQUE MENTIONS ---
 
-    // --- BOT IA : répondre si @breezy-ai est mentionné ---
+    // --- APPEL DU BOT IA (BREEZY AI) ---
     if (content.toLowerCase().includes(`@${BOT_USERNAME}`)) {
-        handleBotReply(post);
+        handleBotReply(post); // Appel asynchrone non bloquant pour le client
     }
 
     return res.status(201).json(post);
@@ -115,6 +118,7 @@ exports.create = async (req, res) => {
 };
 
 // ─── GET /posts/:id ───────────────────────────────────────────
+// Récupère un post par son identifiant unique MongoDB (_id).
 exports.getById = async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
@@ -127,6 +131,7 @@ exports.getById = async (req, res) => {
 };
 
 // ─── DELETE /posts/:id ────────────────────────────────────────
+// Supprime un post, ses likes associés et ses commentaires.
 exports.delete = async (req, res) => {
   try {
     const userId = req.headers['x-user-id'];
@@ -135,10 +140,11 @@ exports.delete = async (req, res) => {
 
     if (!post) return res.status(404).json({ error: { code: 'POST_NOT_FOUND' } });
 
-    // Auteur OU modérateur/admin peuvent supprimer
+    // Règle de sécurité : Seul l'auteur du post OU un modérateur/admin peut le supprimer
     const canDelete = post.user_id === userId || ['moderator', 'admin'].includes(role);
     if (!canDelete) return res.status(403).json({ error: { code: 'FORBIDDEN' } });
 
+    // Nettoyage en cascade dans MongoDB
     await Post.findByIdAndDelete(req.params.id);
     await Like.deleteMany({ post_id: req.params.id });
     await Comment.deleteMany({ post_id: req.params.id });
@@ -150,13 +156,15 @@ exports.delete = async (req, res) => {
   }
 };
 
-// ─── GET /posts/feed (Le flux principal) ──────────────────────
+// ─── GET /posts/feed ──────────────────────────────────────────
+// Récupère le fil d'actualité personnalisé (les posts de l'utilisateur + ceux de ses abonnements).
 exports.getFeed = async (req, res) => {
   try {
     const userId = req.headers['x-user-id'];
     const { page = 1, limit = 20 } = req.query;
     const skip = (page - 1) * limit;
 
+    // 1. Appel HTTP au user-service pour obtenir la liste des identifiants des personnes suivies
     let followingIds = [];
     try {
         const response = await axios.get(
@@ -171,14 +179,17 @@ exports.getFeed = async (req, res) => {
         console.warn('[Post] Impossible de récupérer la liste des abonnements :', err.message);
     }
 
+    // On combine l'utilisateur connecté et ses abonnements dans un tableau unique sans doublons
     const feedUserIds = [...new Set([userId, ...followingIds])];
 
+    // 2. Récupération des posts paginés correspondants dans MongoDB
     const total = await Post.countDocuments({ user_id: { $in: feedUserIds } });
     const posts = await Post.find({ user_id: { $in: feedUserIds } })
         .sort({ created_at: -1 })
         .skip(skip)
         .limit(parseInt(limit));
 
+    // 3. Récupération en parallèle des likes et reposts pour enrichir le retour vers le front (éviter de multiples requêtes)
     const postIds = posts.map(p => p._id);
     const [userLikes, userReposts] = await Promise.all([
       Like.find({ user_id: userId, post_id: { $in: postIds } }),
@@ -187,6 +198,7 @@ exports.getFeed = async (req, res) => {
     const likedSet = new Set(userLikes.map(l => l.post_id.toString()));
     const repostedSet = new Set(userReposts.map(r => r.post_id.toString()));
 
+    // Ajout des drapeaux booléens likedByMe et repostedByMe
     const enriched = posts.map(p => ({
       ...p.toObject(),
       likedByMe: likedSet.has(p._id.toString()),
@@ -204,6 +216,7 @@ exports.getFeed = async (req, res) => {
 };
 
 // ─── GET /posts/user/:userId ──────────────────────────────────
+// Récupère les posts écrits par un utilisateur spécifique.
 exports.getByUser = async (req, res) => {
   try {
     const { page = 1, limit = 20 } = req.query;
@@ -225,6 +238,7 @@ exports.getByUser = async (req, res) => {
 };
 
 // ─── GET /posts/search?q=xxx ou ?tag=xxx ────────────────────────────────
+// Recherche des posts par mots-clés ou tags (insensible à la casse via regex MongoDB).
 exports.searchByTag = async (req, res) => {
   try {
     const { q, tag, page = 1, limit = 20 } = req.query;
@@ -232,6 +246,7 @@ exports.searchByTag = async (req, res) => {
     if (!searchTerm) return res.status(400).json({ error: { code: 'MISSING_QUERY', message: 'Parametre q ou tag requis.' } });
 
     const skip = (page - 1) * limit;
+    // Recherche par regex sur le contenu, le tag exact ou le pseudo
     const filter = {
       $or: [
         { content: { $regex: searchTerm, $options: 'i' } },
@@ -257,6 +272,7 @@ exports.searchByTag = async (req, res) => {
 };
 
 // ─── POST /posts/:id/report ───────────────────────────────────
+// Signale un post inapproprié en changeant sa valeur is_reported.
 exports.report = async (req, res) => {
   try {
     await Post.findByIdAndUpdate(req.params.id, { is_reported: true });
@@ -268,6 +284,7 @@ exports.report = async (req, res) => {
 };
 
 // ─── PUT /posts/:id ───────────────────────────────────────────
+// Modifie le contenu d'un post existant.
 exports.update = async (req, res) => {
   try {
     const userId = req.headers['x-user-id'];
@@ -283,13 +300,14 @@ exports.update = async (req, res) => {
     const post = await Post.findById(req.params.id);
     if (!post) return res.status(404).json({ error: { code: 'POST_NOT_FOUND' } });
 
+    // Sécurité : Seul l'auteur du post peut le modifier
     if (post.user_id !== userId) {
         return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Vous ne pouvez modifier que vos propres posts.' } });
     }
 
     post.content = content;
     post.tags = tags;
-    // Only update media_urls if explicitly provided (preserve existing photos otherwise)
+    // On met à jour la liste des images uniquement si elle est explicitement fournie
     if (media_urls !== undefined) {
       post.media_urls = media_urls;
     }
@@ -303,10 +321,12 @@ exports.update = async (req, res) => {
 };
 
 // ─── GET /posts/user/:userId/media ────────────────────────────
+// Récupère uniquement les posts contenant des images d'un utilisateur donné.
 exports.getUserMedia = async (req, res) => {
   try {
     const { page = 1, limit = 20 } = req.query;
     const skip = (page - 1) * limit;
+    // Filtre : posts de l'auteur contenant au moins 1 élément dans media_urls
     const filter = { user_id: req.params.userId, "media_urls.0": { $exists: true } };
     const total = await Post.countDocuments(filter);
     const posts = await Post.find(filter).sort({ created_at: -1 }).skip(skip).limit(parseInt(limit));
@@ -318,12 +338,15 @@ exports.getUserMedia = async (req, res) => {
 };
 
 // ─── GET /posts/user/:userId/likes ────────────────────────────
+// Récupère les posts aimés par un utilisateur.
 exports.getUserLikes = async (req, res) => {
   try {
     const { page = 1, limit = 20 } = req.query;
     const skip = (page - 1) * limit;
+    // Récupère les liaisons de likes
     const likes = await Like.find({ user_id: req.params.userId }).sort({ created_at: -1 }).skip(skip).limit(parseInt(limit));
     const postIds = likes.map(l => l.post_id);
+    // Récupère les objets posts associés
     const posts = await Post.find({ _id: { $in: postIds } });
     const total = await Like.countDocuments({ user_id: req.params.userId });
     return res.json({ data: posts, pagination: { page: parseInt(page), limit: parseInt(limit), total, hasNext: skip + likes.length < total } });
@@ -334,6 +357,7 @@ exports.getUserLikes = async (req, res) => {
 };
 
 // ─── GET /posts/user/:userId/replies ──────────────────────────
+// Récupère tous les commentaires et réponses écrits par un utilisateur.
 exports.getUserReplies = async (req, res) => {
   try {
     const { page = 1, limit = 20 } = req.query;
@@ -348,6 +372,7 @@ exports.getUserReplies = async (req, res) => {
 };
 
 // ─── POST /posts/:id/repost ───────────────────────────────────
+// Permet de reposter ou d'annuler un repost sur un message (bouton bascule).
 exports.toggleRepost = async (req, res) => {
   try {
     const userId = req.headers['x-user-id'];
@@ -359,10 +384,12 @@ exports.toggleRepost = async (req, res) => {
     const existingRepost = await Repost.findOne({ post_id: postId, user_id: userId });
 
     if (existingRepost) {
+        // Déjà reposté -> on supprime le repost et on décrémente le compteur
         await Repost.findByIdAndDelete(existingRepost._id);
         const updated = await Post.findByIdAndUpdate(postId, { $inc: { reposts_count: -1 } }, { new: true });
         return res.json({ reposts_count: Math.max(0, updated.reposts_count), reposted: false });
     } else {
+        // Non reposté -> on crée le repost et on incrémente le compteur
         await Repost.create({ post_id: postId, user_id: userId });
         const updated = await Post.findByIdAndUpdate(postId, { $inc: { reposts_count: 1 } }, { new: true });
         return res.json({ reposts_count: updated.reposts_count, reposted: true });
@@ -374,16 +401,16 @@ exports.toggleRepost = async (req, res) => {
 };
 
 // ─── POST /upload ─────────────────────────────────────────────
+// Point d'entrée pour l'upload d'un fichier média.
 exports.uploadMedia = async (req, res) => {
   try {
-    // Erreurs multer (fichier trop gros, mauvais format) — multer les met dans req.fileValidationError
-    // ou via l'error handler du middleware
     if (req.fileValidationError) {
       return res.status(400).json({ error: { code: 'INVALID_FILE', message: req.fileValidationError } });
     }
     if (!req.file) {
       return res.status(400).json({ error: { code: 'NO_FILE', message: 'Aucun fichier fourni.' } });
     }
+    // Génère l'URL publique locale relative
     const url = `/api/uploads/${req.file.filename}`;
     return res.status(201).json({ url });
   } catch (err) {
@@ -392,7 +419,7 @@ exports.uploadMedia = async (req, res) => {
   }
 };
 
-// Middleware de gestion des erreurs multer (fichier trop gros, mauvais type...)
+// Middleware d'interception et de formatage des erreurs Multer (fichier trop gros, etc.)
 exports.handleUploadError = (err, req, res, next) => {
   if (err) {
     if (err.code === 'LIMIT_FILE_SIZE') {
@@ -407,6 +434,7 @@ exports.handleUploadError = (err, req, res, next) => {
 };
 
 // ─── GET /posts/user/:userId/reposts ──────────────────────────
+// Récupère la liste de tous les messages repostés par un utilisateur.
 exports.getUserReposts = async (req, res) => {
   try {
     const { page = 1, limit = 20 } = req.query;
