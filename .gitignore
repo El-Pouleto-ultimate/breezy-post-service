@@ -1,3 +1,4 @@
 node_modules/
 .env
-npm-debug.logjournal_de_bord.md
+npm-debug.log
+journal_de_bord.md
